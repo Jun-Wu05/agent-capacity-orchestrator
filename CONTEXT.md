@@ -46,6 +46,18 @@ Capacity 观测结果的可信度：`EXACT`、`OBSERVED`、`ESTIMATED`、`UNKNOW
 ### 中文展示层
 所有面向用户的文档、CLI 状态、错误原因、解释信息和通知文案默认使用中文。内部状态码、接口名、类型名、CLI 参数和配置键可使用英文，以保持机器可读性、生态兼容性与跨平台开发一致性。
 
+### Daemon
+本地后台调度进程。Daemon 本身不作为权威状态源；真正的 Task 状态持久化在 SQLite / Task Snapshot 中。因此 daemon 崩溃、系统重启或版本升级后，应能通过持久状态恢复调度。
+
+### Snapshot Schema Version
+Task Snapshot 必须包含 schema 版本，并支持向前迁移。ACO 自身升级不能导致已有等待任务丢失或无法读取。
+
+### Retry Policy
+对可重试的瞬时错误最多自动重试 3 次；配置错误、权限错误、Git 冲突等不可重试错误直接进入阻塞状态，避免无限重试。
+
+### Distribution Layer（分发层）
+核心产品与 Agent Skill 是两层不同能力：核心产品负责 CLI、daemon、SQLite、任务恢复与系统集成；Skill 负责教具体 Agent 如何识别用户意图并调用核心产品。未来可以同时提供 npm/npx 安装和 `npx skills add ...` 形式的可选 Skill 安装。
+
 ## MVP 已确定边界
 
 - 只做同 Agent 继续，不做 Codex ↔ ZCODE 自动任务切换。
@@ -68,6 +80,12 @@ Capacity 观测结果的可信度：`EXACT`、`OBSERVED`、`ESTIMATED`、`UNKNOW
 - AUTO 恢复前必须通过 Preflight Check；未通过则阻塞，不强行执行。
 - CLI `status` / `explain` 等用户可见信息默认中文，并明确展示当前状态、阻塞原因、恢复时间、Confidence 与下一步动作。
 - MVP 提供本地通知；飞书、微信等外部通知/控制渠道只预留接口。
+- daemon 无状态，SQLite / Task Snapshot 才是任务状态的权威来源。
+- ACO 升级不得导致等待任务丢失；Snapshot 从第一版开始版本化并支持迁移。
+- Resume Session 失败时，如果 Task Snapshot 足够完整，则自动回退到 Resume Task；否则进入阻塞状态。
+- 瞬时错误最多自动重试 3 次；不可重试错误直接阻塞。
+- MVP 只支持 Git 仓库，以保证 checkpoint commit 与 worktree 隔离模型成立。
+- 产品本体不等同于 Skill：核心安装负责后台能力，Skill 作为可选 Agent 交互层。
 
 ## 仍待设计的问题
 
@@ -77,7 +95,9 @@ Capacity 观测结果的可信度：`EXACT`、`OBSERVED`、`ESTIMATED`、`UNKNOW
 - ignored 文件 allowlist 的配置方式与安全边界。
 - isolated worktree 的生命周期、路径、清理和异常恢复规则。
 - 无人值守执行的文件系统权限边界，以及与 Agent 自身 sandbox/approval 设置的关系。
-- CLI / daemon 生命周期、安装与分发方式。
+- CLI / daemon 生命周期、安装、卸载与升级方式。
+- npm/npx 核心包与可选 Agent Skill 的具体分发关系。
 - Windows 本地通知的具体实现方式。
 - 飞书、微信等 Notification Adapter / Control Adapter 的扩展接口。
 - 模型、reasoning、sandbox、approval 等运行时设置如何捕获、存储和恢复。
+- MVP 的正式验收场景与通过标准。
