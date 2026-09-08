@@ -8,17 +8,17 @@
 ```text
 Windows 版本：11
 Windows build：10.0.26100.8875
-Codex Desktop 版本：
+Codex Desktop 版本：26.901.51231
 Node.js：v24.11.1
 Git：2.52.0.windows.1
 PowerShell：10.0.26100.8875
-实验时间：
+实验时间：2026/09/08
 ```
 
 ## 2. Desktop 自动化入口盘点
 
 ```text
-是否存在 Automations / Scheduled Tasks：是 / 否 / 未找到
+是否存在 Automations / Scheduled Tasks：是 / 否 / 未找到 桌面版没找到，web端看到了
 入口位置：
 是否可设置未来执行时间：
 是否可选择 project：
