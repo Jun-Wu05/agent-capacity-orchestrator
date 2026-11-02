@@ -209,6 +209,7 @@ V0.1 状态：
 ```text
 CAPTURING
 WAITING_CAPACITY
+WAITING_SESSION
 READY
 PREFLIGHT
 RESUMING_SESSION
@@ -244,20 +245,32 @@ PREFLIGHT
 
 RESUMING_SESSION
   ├─ success → RUNNING
-  ├─ safe fallback → RESUMING_TASK
+  ├─ session locked (active writer) → WAITING_SESSION
+  ├─ session not found (no rollout found) → RESUMING_TASK（若 Snapshot 足够）/ BLOCKED
+  ├─ quota exhausted → WAITING_CAPACITY
   └─ unsafe → BLOCKED
+
+WAITING_SESSION（ADR 0003：会话被 Desktop 占用）
+  ├─ retry (backoff) → PREFLIGHT
+  ├─ user `aco resume --as-task` → RESUMING_TASK
+  ├─ cancel → CANCELLED
+  └─ 无自动超时转 RESUMING_TASK
 
 RESUMING_TASK
   ├─ success → RUNNING
   └─ fail → BLOCKED
 
-RUNNING
-  ├─ tests needed → TESTING
-  ├─ quota exhausted → WAITING_CAPACITY
-  ├─ transient error → retry / FAILED
+RUNNING（每轮结束读 rollout 判定，见 §8.6）
+  ├─ ACO-STATUS: DONE 且本轮无被拒提权 → FINALIZING
+  ├─ ACO-STATUS: DONE 但本轮有被拒提权 → BLOCKED（需审查）
+  ├─ ACO-STATUS: BLOCKED → BLOCKED
+  ├─ CONTINUE / 缺失标记 → 再跑一轮（续跑上限默认 3，可配置；超过 → BLOCKED）
+  ├─ task_complete.error = usage_limit_exceeded → WAITING_CAPACITY
+  ├─ transient error → retry（独立计数，最多 3）/ FAILED
   └─ fatal error → BLOCKED
 
-TESTING
+TESTING（V0.1 不进入：测试由 agent 在本轮内自行运行，见 ADR 0003 §6；
+         由 ACO 独立执行用户测试命令的方案留待后续版本，届时启用以下迁移）
   ├─ pass → FINALIZING
   ├─ fail but agent can fix → RUNNING
   └─ unrecoverable → BLOCKED
@@ -540,21 +553,33 @@ Preflight 时重新验证。
 
 ### 8.4 Resume Session
 
-执行目标：
+> 2026-11-02 依据 ADR 0003 修订：唯一续跑通道是 `codex exec resume`，不用 `codex queue`。
+
+执行：
 
 ```text
-codex resume <SESSION_ID>
+cwd = <ACO worktree>
+codex exec resume <SESSION_ID> <continuation_prompt>
+      -m <snapshot.model 或用户指定替代模型>
+      -c model_reasoning_effort=<effort>
+      -c sandbox_mode=<sandbox>
+      [-c "sandbox_workspace_write.writable_roots=[...]"]
+      --json
 ```
 
-自动化实现不应只依赖“进程退出码 0”判断确实恢复成功。
+- 总是显式传 `-m`，不依赖 config.toml 默认值。
+- approval 恒为 `never`，不可覆盖（见 §15、ADR 0003）。
+- 禁止 `--skip-git-repo-check`、`--dangerously-bypass-approvals-and-sandbox`。
+- 不预先探测 `thread-writer-locks`，以 CLI 报错分类：
 
-还需要至少一项二次验证：
+| 输出特征 | 分类 | 迁移 |
+|---|---|---|
+| `already has an active writer` | `E_SESSION_LOCKED` | → WAITING_SESSION |
+| `no rollout found for thread id` | `E_SESSION_NOT_FOUND` | → RESUMING_TASK / BLOCKED |
+| `Not inside a trusted directory` | `E_GIT_NOT_REPOSITORY`（实为非 git 目录） | → BLOCKED |
+| 其他 exit≠0 | 读 rollout 再判 | — |
 
-- resumed thread/session id 与预期一致；
-- 新产生 session/event 与目标 UUID 一致；
-- 或 Adapter 解析出明确的 resume success signal。
-
-如果无法验证，按安全失败处理。
+成功判定不信 exit code，读目标 rollout 中本次新增的 `task_started` / `task_complete`（§8.6）。
 
 ### 8.5 Resume Task Fallback
 
@@ -575,7 +600,22 @@ Continuation prompt 至少包含：
 - 已完成/未完成摘要；
 - 要求先检查工作区和测试；
 - 禁止重复已完成工作；
-- 禁止扩大权限。
+- 禁止扩大权限；
+- 说明本轮无法弹审批、提权会被拒绝，遇到时应停下并说明原因；
+- 要求最后一行输出 `ACO-STATUS: DONE | BLOCKED: <原因> | CONTINUE`。
+
+Resume Session 的续跑 prompt 同样包含后三条。
+
+### 8.6 每轮结果判定（ADR 0003）
+
+读目标 rollout 中本次新增的轮次：
+
+1. `task_complete.error.codex_error_info == "usage_limit_exceeded"` → 额度耗尽；
+2. `task_complete.error` 其他非空 → 按错误分类；
+3. 本轮存在带 `require_escalated` 且被拒的命令 → 标记"有被拒提权"；
+4. 解析 `last_agent_message` 最后一行的 `ACO-STATUS`。
+
+不解析 CLI stdout 文本（额度耗尽时 `turn.failed` 只有纯文本）。
 
 ---
 
@@ -661,10 +701,14 @@ eligible =
 6. worktree HEAD / branch 可解释；
 7. Codex CLI 可执行；
 8. Session 可验证，或 fallback 条件满足；
-9. 原 runtime 配置仍可用；
+9. 原 runtime 配置仍可用，其中模型须在 `codex debug models` 中（或为用户已指定的替代模型）；
 10. Capacity 当前 available；
 11. 权限策略允许；
-12. 当前 Task 没有另一个 active run。
+12. 当前 Task 没有另一个 active run；
+13. 目标 Session 在 `~/.codex/queue_1.sqlite` 中无残留 queue 消息（只读查询；查询失败视为不通过）；
+14. cwd（worktree）位于 git 仓库内。
+
+会话是否被 Desktop 占用**不在** Preflight 中探测，由 §8.4 的 CLI 报错决定。
 
 ### 11.2 结果
 
@@ -889,6 +933,20 @@ Task Snapshot runtime
 ```
 
 但 ACO 不允许自行放宽权限。
+
+实测可恢复性（P0-01 §7.4、P0-02 §0.1）：
+
+| 设置 | 来源 | exec resume 能否恢复 |
+|---|---|---|
+| model | 最后一条 `turn_context.model` | `-m`；需先过模型预检 |
+| reasoning effort | `turn_context.effort` | `-c model_reasoning_effort=` |
+| sandbox mode | `turn_context.sandbox_policy.type` | `-c sandbox_mode=` |
+| writable_roots | `turn_context.sandbox_policy.writable_roots` | `-c "sandbox_workspace_write.writable_roots=[...]"`，需重映射到 worktree 路径 |
+| approval | `turn_context.approval_policy` | **不能**，恒为 `never` |
+
+approval 降级处理：`resume-later` 时用中文告知（只告知、不确认），Snapshot 记录原值与"已告知"。
+
+模型预检：`resume-later` 时若模型不在 `codex debug models` 中，交互式请用户明确选择替代模型，Snapshot 记 `model_override_by_user`；Preflight 再检，仍不可用则：
 
 如果原 runtime 不可恢复：
 
@@ -1223,6 +1281,8 @@ BLOCKED_WORKTREE_CHANGED
 E_GIT_NOT_REPOSITORY
 E_SESSION_NOT_FOUND
 E_SESSION_AMBIGUOUS
+E_SESSION_LOCKED
+E_SESSION_QUEUE_RESIDUE
 E_SESSION_RESUME_FAILED
 E_CAPACITY_UNKNOWN
 E_SNAPSHOT_INVALID
@@ -1235,6 +1295,8 @@ E_RUNTIME_MISMATCH
 E_PERMISSION_DENIED
 E_PREFLIGHT_FAILED
 E_RETRY_EXHAUSTED
+E_CONTINUATION_EXHAUSTED
+E_ESCALATION_DENIED
 E_STATE_INCONSISTENT
 ```
 
@@ -1325,6 +1387,9 @@ CLI 根据错误码输出中文，而不是业务代码里散落中文字符串�
 10. checkpoint commit 对 staged/unstaged/untracked 的无损迁移算法。
 
 这些事实应先通过小型 Prototype Ticket 验证，而不是直接写死进核心架构。
+
+**2026-11-02 状态**：1–9 已由 P0-01～P0-04 验证（见各 `prototypes/*/RESULT.md`，决策见 ADR 0003）；10 待 P0-05 / 实现期 spike。
+ADR 0003 另列 5 项实现前 spike（锁报错原文、关闭对话是否释放锁、后台运行时 Desktop 打开同一对话、Desktop 执行期是否必持锁、CLI 中途耗尽）。
 
 ---
 

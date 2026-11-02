@@ -28,3 +28,22 @@
 - 无人值守默认权限止于本地修改、测试、本地 commit；除非后续策略明确授权，不自动 push / merge。
 - MVP 提供本地通知；飞书、微信等外部通知与控制只预留扩展接口。
 - MVP 不使用 AI scoring 或跨 Agent 自动路由。
+
+## Agent skills
+
+### Issue tracker
+
+Issues 存放在 GitHub Issues（`Jun-Wu05/agent-capacity-orchestrator`），使用 `gh` CLI。See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+使用默认五个 triage 标签：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+single-context：根目录 `CONTEXT.md`（本仓库的领域词汇表）+ `docs/adr/`。See `docs/agents/domain.md`.
+
+## 会话记录与实验产物
+
+- 会话记录：每次会话在 `context_summary/` 新建 `yyyyMMdd_HHmm_简短概述.md`（时间戳取写入时的当前时间）；已有文件只读，补充或更正一律写进新文件。
+- 实验产物：原型脚本生成的一次性仓库、worktree、日志统一放在工作区根部的 `_aco-sandbox/<实验名>/`（与本仓库同级，避免嵌套 git 仓库）；脚本按自身位置推算该路径，并提供 `-Root` 参数覆盖。

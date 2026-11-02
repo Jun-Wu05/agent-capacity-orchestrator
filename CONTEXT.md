@@ -17,7 +17,16 @@
 使用平台原生的 Session 身份或恢复能力，继续之前完全相同的 Agent 会话。可靠时优先使用 Resume Session，但 Task 的可恢复性不能依赖 Session 一定可恢复。
 
 ### Codex Client Surface（Codex 客户端表面）
-Codex 可以通过不同客户端使用，例如 Codex CLI 与 Codex Desktop。V0.1 的后台自动恢复执行通道以 Codex CLI 为基线；Codex Desktop 是否可作为任务来源，取决于 Desktop 与 CLI 是否共享或可互操作 Session 身份、项目绑定和可恢复状态。该互操作性在 P0-01A Prototype 验证前不得视为既定事实。
+Codex 可以通过不同客户端使用，例如 Codex CLI 与 Codex Desktop。P0-01 已验证 Desktop 与 CLI 共享 Session 存储，Desktop 创建的会话可以被 CLI resume。V0.1 的后台续跑通道只用 Codex CLI 的 `exec resume`（ADR 0003）。
+
+### Session Writer Lock（会话写锁）
+Codex 为每个正在被写入的 Session 持有 `~/.codex/thread-writer-locks/<session_id>.lock`。Session 被 Desktop 加载时锁被占用，此时 CLI `exec resume` 失败（`already has an active writer`）。ACO 不读写该锁文件，只根据 CLI 的报错判断。
+
+### WAITING_SESSION
+Task 已满足额度条件，但目标 Session 被 Codex Desktop 占用，暂时无法 `exec resume`。ACO 通知用户退出 Desktop，并按退避间隔重试；不会自动改走 Resume Task。
+
+### Approval Downgrade（审批降级）
+`codex exec resume` 下 approval 恒为 `never`：所有提权请求被自动拒绝，沙箱照常生效。这是权限收窄，不是放宽。ACO 在 `resume-later` 时必须向用户明确说明。
 
 ### Task Snapshot
 由本工具自动生成并持久化的“任务工作断点”。它不是一次性文件，而是 Task 的持久状态。系统在关键事件发生时自动更新 Snapshot，例如捕获任务、恢复执行、关键文件状态变化、测试完成、额度再次中断、任务完成等。它保存足够的信息，使平台原生 Session 无法恢复或恢复失败时，仍能继续同一个 Task。具体 schema、版本与恢复语义仍需专门设计。
@@ -65,8 +74,10 @@ Task Snapshot 必须包含 schema 版本，并支持向前迁移。ACO 自身升
 
 - 只做同 Agent 继续，不做 Codex ↔ ZCODE 自动任务切换。
 - 第一刀可以只支持 Codex。
-- V0.1 的后台自动恢复执行通道以 Codex CLI 为基线。
-- Codex Desktop 是否可以作为任务来源，必须先通过 P0-01A 验证 Desktop ↔ CLI Session 互操作性；验证前不承诺支持。
+- V0.1 的后台续跑通道只用 `codex exec resume` + isolated worktree；`codex queue` 推迟到 V0.2（ADR 0003）。
+- Codex Desktop 创建的 Session 可以作为任务来源（P0-01 已验证）；Session 被 Desktop 占用时进入 `WAITING_SESSION`，不自动改走 Resume Task。
+- 恢复所用模型在 `resume-later` 与恢复前各预检一次；不可用时由用户明确选择替代，ACO 永不自动替换模型。
+- ACO 不写 Codex 的私有状态（写锁、`queue_1.sqlite`、`config.toml`）。
 - MVP 接管方式先做：额度耗尽后由用户显式执行类似 `resume-later` 的 handoff；后续再做自动检测与自动接管。
 - 优先使用平台原生 Resume Session，Resume Task 作为持久化兜底。
 - Task Snapshot 自动生成，用户不需要手工维护。
@@ -94,16 +105,12 @@ Task Snapshot 必须包含 schema 版本，并支持向前迁移。ACO 自身升
 
 ## 仍待设计的问题
 
-- Codex Desktop 与 CLI 是否共享或可互操作 Session、项目绑定和 runtime 元数据。
 - Codex Session 的发现、识别与准确绑定方式。
 - Task Snapshot 的完整 schema、checkpoint 触发点、版本兼容与恢复校验机制。
 - checkpoint commit 如何处理 staged、unstaged、untracked 文件，以及内部提交最终 squash 的具体规则。
 - ignored 文件 allowlist 的配置方式与安全边界。
 - isolated worktree 的生命周期、路径、清理和异常恢复规则。
-- 无人值守执行的文件系统权限边界，以及与 Agent 自身 sandbox/approval 设置的关系。
 - CLI / daemon 生命周期、安装、卸载与升级方式。
 - npm/npx 核心包与可选 Agent Skill 的具体分发关系。
-- Windows 本地通知的具体实现方式。
 - 飞书、微信等 Notification Adapter / Control Adapter 的扩展接口。
-- 模型、reasoning、sandbox、approval 等运行时设置如何捕获、存储和恢复。
 - MVP 的正式验收场景与通过标准。
