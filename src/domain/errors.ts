@@ -27,3 +27,16 @@ export class InvalidTransitionError extends DomainError {
     super(`Illegal transition: state ${from} does not accept event ${event}`);
   }
 }
+
+/**
+ * 目标目录不是 Git 仓库（E_GIT_NOT_REPOSITORY，TDD §12.1 / §24）。
+ * 票 #16 要求此错误直接面向用户给出中文文案；§24 的 CLI 错误码映射表
+ * 落地后可迁移为查表输出。
+ */
+export class GitNotRepositoryError extends DomainError {
+  readonly code = "E_GIT_NOT_REPOSITORY";
+
+  constructor(readonly path: string) {
+    super(`目标目录不是 Git 仓库，已停止接管检查：${path}`);
+  }
+}
