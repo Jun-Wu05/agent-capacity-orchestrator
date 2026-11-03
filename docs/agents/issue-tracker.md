@@ -46,11 +46,35 @@ GitHub 的 issues 与 PR 共用一个编号空间，单写 `#42` 可能是二者
 
 ## 本仓库现有 issues
 
-- #1 P0-01 Codex Session Discovery
-- #2 P0-02 Codex Resume / Runtime
-- #3 P0-03 Codex Capacity / Quota
-- #4 P0-04 Windows Integration
-- #5 P0-05 Git Checkpoint / Worktree
-- #6 P0-00 Codex Desktop 原生自动化能力与缺口分析
+### 已关闭（原型验证，2026-11-02）
+
+- #1 P0-01 Codex Session Discovery（PASS）
+- #2 P0-02 Codex Resume / Runtime（PASS）
+- #3 P0-03 Codex Capacity / Quota（完成）
+- #4 P0-04 Windows Integration（PASS）
+- #5 P0-05 Git Checkpoint / Worktree（PASS）
+- #6 P0-00 Codex Desktop 原生自动化能力与缺口分析（完成）
+- #7 / #8：拆票脚本中断重跑产生的重复票，内容在 #9 / #10
+
+### 进行中：MVP 实现地图（#9，`wayfinder:map`）
+
+- Phase 1（Domain + Persistence）：
+  - #10 Task 领域模型与 TaskStateMachine
+  - #11 Task Snapshot schema v1 定稿（设计）
+  - #12 Snapshot 存储与原子写入（blocked by #11、#13）
+  - #13 SQLite schema 与 TaskRepository
+  - #14 Snapshot migration 框架（blocked by #12）
+  - #15 Event log 与状态写入顺序（blocked by #12、#13）
+- Phase 2（Git Isolation）：
+  - #16 repo 检测与脏状态捕获
+  - #17 Checkpoint commit 无损迁移（blocked by #16）
+  - #18 Isolated worktree 创建（blocked by #17）
+  - #19 Finalize 流程（blocked by #18）
+- Spike（Phase 3 / Codex Adapter 前置，ADR 0003 补测）：
+  - #20 会话被持锁时 `exec resume` 报错原文
+  - #21 关闭 / 切走 Desktop 对话能否释放写锁
+  - #22 后台 `exec resume` 期间用户在 Desktop 打开同一对话
+  - #23 Desktop 执行一轮期间是否必然持锁
+  - #24 CLI 运行中途耗尽额度的表现
 
 各 Prototype 的验证结果写在 `prototypes/<P0-xx>/RESULT.md`。
