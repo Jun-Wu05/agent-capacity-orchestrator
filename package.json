@@ -1,0 +1,19 @@
+{
+  "name": "agent-capacity-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Capacity Orchestrator (ACO) - quota-exhausted takeover and continuation for coding agents (MVP: Codex)",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

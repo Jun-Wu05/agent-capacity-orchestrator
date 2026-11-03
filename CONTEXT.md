@@ -65,7 +65,7 @@ Capacity 观测结果的可信度：`EXACT`、`OBSERVED`、`ESTIMATED`、`UNKNOW
 Task Snapshot 必须包含 schema 版本，并支持向前迁移。ACO 自身升级不能导致已有等待任务丢失或无法读取。
 
 ### Retry Policy
-对可重试的瞬时错误最多自动重试 3 次；配置错误、权限错误、Git 冲突等不可重试错误直接进入阻塞状态，避免无限重试。
+对可重试的瞬时错误最多自动重试 3 次；配置错误、权限错误、Git 冲突等不可重试错误直接进入阻塞状态，避免无限重试。续跑（CONTINUE / 缺失标记）计数与瞬时错误重试是两个独立计数器（各默认上限 3）：前者超限进入 BLOCKED，后者超限进入 FAILED。
 
 ### Distribution Layer（分发层）
 核心产品与 Agent Skill 是两层不同能力：核心产品负责 CLI、daemon、SQLite、任务恢复与系统集成；Skill 负责教具体 Agent 如何识别用户意图并调用核心产品。未来可以同时提供 npm/npx 安装和 `npx skills add ...` 形式的可选 Skill 安装。

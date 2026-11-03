@@ -194,7 +194,8 @@ interface Task {
   sessionId?: string
   snapshotVersion: number
   startPolicy: "AUTO" | "MANUAL"
-  retryCount: number
+  continuationCount: number
+  transientRetryCount: number
   createdAt: string
   updatedAt: string
 }
@@ -1298,6 +1299,7 @@ E_RETRY_EXHAUSTED
 E_CONTINUATION_EXHAUSTED
 E_ESCALATION_DENIED
 E_STATE_INCONSISTENT
+E_INVALID_TRANSITION
 ```
 
 CLI 根据错误码输出中文，而不是业务代码里散落中文字符串。
