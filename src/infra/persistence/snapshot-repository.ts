@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -298,12 +299,15 @@ export class SnapshotRepository {
 
   /**
    * 落盘一个 Snapshot（先校验后写入）。
-   * @param commitDb rename 成功后执行（调用方在此跑 DB transaction，TDD §6.2）。
+   * @param commitDb rename 成功后执行（调用方在此跑 DB transaction，TDD §6.2）；
+   *   参数是刚落盘内容的 SHA-256（十六进制），供事件 payload 记录、崩溃对账比对（#15）。
+   * @returns 落盘内容的 SHA-256（十六进制）。
    */
-  save(snapshot: TaskSnapshotV1, commitDb?: () => void): void {
+  save(snapshot: TaskSnapshotV1, commitDb?: (snapshotSha256: string) => void): string {
     // 写入前先按当前 schema 层校验把关，杜绝非法结构落盘。
     this.schema.validate(snapshot);
-    const serialized = `${JSON.stringify(snapshot, null, 2)}\n`;
+    const bytes = Buffer.from(`${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+    const snapshotSha256 = createHash("sha256").update(bytes).digest("hex");
     const finalPath = this.snapshotFilePath(snapshot.task.id);
     const previousPath = this.previousFilePath(snapshot.task.id);
     const tempPath = this.tempFilePath(snapshot.task.id);
@@ -314,7 +318,7 @@ export class SnapshotRepository {
 
     const fd = fs.openSync(tempPath, "w");
     try {
-      fs.writeSync(fd, serialized);
+      fs.writeSync(fd, bytes);
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
@@ -331,7 +335,8 @@ export class SnapshotRepository {
       throw err;
     }
 
-    commitDb?.();
+    commitDb?.(snapshotSha256);
+    return snapshotSha256;
   }
 
   /**

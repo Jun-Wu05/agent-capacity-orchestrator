@@ -417,6 +417,10 @@ Schema 在 MVP 发布前定稿，全部字段并入 `schema_version = 1`，不�
 - `TASK_COMPLETED`
 - `TASK_BLOCKED`
 - `TASK_FAILED`
+- `SESSION_WAIT_ENTERED`（进入 `WAITING_SESSION`，#15 补充）
+- `SESSION_WAIT_EXITED`（退出 `WAITING_SESSION`，#15 补充）
+
+事件写入统一由 Application Service（`src/application/task-service.ts`）控制顺序：snapshot 原子落盘（§6.2）→ 同一 DB 事务内更新 tasks 行 + 追加 task_events（提交点）；事件 payload 结构化 JSON 并记录 `snapshot_sha256`，可离线重放；崩溃后以 event log 重放为准绳对账（`reconcile`，§23.2）。
 
 配套规则（#11）：
 
