@@ -10,6 +10,21 @@ import { TaskState } from "../../domain/task-state.js";
  */
 export const SNAPSHOT_SCHEMA_VERSION = 1;
 
+/**
+ * 「一个 schema 版本」的抽象（#14）：版本号 + 该版本的校验器。
+ * 框架据此实现 inspect → 串行迁移 → validate 的统一读取入口；
+ * 未来 v2 落地时新增一个 SnapshotSchemaLevel 并在迁移注册表追加一步即可。
+ */
+export interface SnapshotSchemaLevel {
+  readonly version: number;
+  readonly validate: (value: unknown) => TaskSnapshotV1;
+}
+
+export const SNAPSHOT_SCHEMA_V1: SnapshotSchemaLevel = {
+  version: SNAPSHOT_SCHEMA_VERSION,
+  validate: (value) => validateSnapshotV1(value),
+};
+
 /** BLOCKED 原因结构化（#11 决策）：code 复用 TDD §24 枚举，detail 仅给人看。 */
 export interface TaskBlockedInfo {
   code: string;
@@ -147,11 +162,13 @@ function expectInt(parent: Record<string, unknown>, key: string, path: string): 
 /**
  * 校验 Snapshot v1 全字段（TDD §6.3 #11 定稿版）。
  * 读取入口与写入入口共用：写入时先校验，保证落盘文件永远可通过同一校验。
+ * @param expectedVersion 该校验器作用的 schema_version 标签（默认 1）；
+ *   未来 v2 结构若与 v1 同构，可复用本函数并传入 2（#14 假想迁移测试即此用法）。
  */
-export function validateSnapshotV1(value: unknown): TaskSnapshotV1 {
+export function validateSnapshotV1(value: unknown, expectedVersion: number = SNAPSHOT_SCHEMA_VERSION): TaskSnapshotV1 {
   if (!isPlainObject(value)) fail("(root)", "expected JSON object");
-  if (value.schema_version !== SNAPSHOT_SCHEMA_VERSION) {
-    fail("schema_version", `expected ${SNAPSHOT_SCHEMA_VERSION}, got ${String(value.schema_version)}`);
+  if (value.schema_version !== expectedVersion) {
+    fail("schema_version", `expected ${expectedVersion}, got ${String(value.schema_version)}`);
   }
 
   const task = expectObject(value, "task", "task");
@@ -261,8 +278,10 @@ export class SnapshotRepository {
   constructor(
     /** ACO 数据根目录，例如 %LOCALAPPDATA%\AgentCapacityOrchestrator。 */
     private readonly baseDir: string,
-    /** 注册的迁移链（#14 挂载）；当前为空，读取 v1 时循环体不执行。 */
+    /** 注册的迁移链（#14）；生产入口用 createDefaultSnapshotRepository 注入注册表。 */
     private readonly migrations: SnapshotMigration[] = [],
+    /** 当前 schema 版本层（版本号 + 校验器）；缺省为 v1。 */
+    private readonly schema: SnapshotSchemaLevel = SNAPSHOT_SCHEMA_V1,
   ) {}
 
   snapshotFilePath(taskId: string): string {
@@ -282,8 +301,8 @@ export class SnapshotRepository {
    * @param commitDb rename 成功后执行（调用方在此跑 DB transaction，TDD §6.2）。
    */
   save(snapshot: TaskSnapshotV1, commitDb?: () => void): void {
-    // 写入前先按同一套校验把关，杜绝非法结构落盘。
-    validateSnapshotV1(snapshot);
+    // 写入前先按当前 schema 层校验把关，杜绝非法结构落盘。
+    this.schema.validate(snapshot);
     const serialized = `${JSON.stringify(snapshot, null, 2)}\n`;
     const finalPath = this.snapshotFilePath(snapshot.task.id);
     const previousPath = this.previousFilePath(snapshot.task.id);
@@ -330,10 +349,11 @@ export class SnapshotRepository {
       }
       try {
         const raw: unknown = JSON.parse(fs.readFileSync(path, "utf8"));
-        return validateSnapshotV1(this.runMigrations(raw));
+        return this.runMigrations(raw);
       } catch (err) {
         if (err instanceof SnapshotMigrationError) {
-          // schema 断链是版本层面的失败，previous 属于同一代链，回退无意义：直接上抛（§6.5 禁止带病继续）。
+          // 迁移失败即停（TDD §6.5）：schema 层面的失败，previous 属于同一代链，回退无意义，直接上抛；
+          // 上层（adapter/scheduler）据 E_SNAPSHOT_MIGRATION_FAILED 把任务置为 BLOCKED，不得带病继续。
           throw err;
         }
         failures.push(`${path}: ${err instanceof Error ? err.message : String(err)}`);
@@ -344,37 +364,50 @@ export class SnapshotRepository {
     );
   }
 
-  private runMigrations(raw: unknown): RawSnapshot {
+  /**
+   * inspect schema_version → 串行迁移（禁跳版本、失败即停）→ 按当前 schema 层校验。
+   * 负路径错误消息使用中文：这是直接面向「任务为什么被拒用」的判词（票 #14）。
+   */
+  private runMigrations(raw: unknown): TaskSnapshotV1 {
     if (!isPlainObject(raw) || typeof raw.schema_version !== "number") {
-      throw new SnapshotInvalidError("missing or invalid schema_version");
+      throw new SnapshotInvalidError("snapshot 缺少或含有非法的 schema_version 字段");
     }
     let current: RawSnapshot = raw as RawSnapshot;
     let version = current.schema_version;
-    if (version > SNAPSHOT_SCHEMA_VERSION) {
+    if (version > this.schema.version) {
       throw new SnapshotInvalidError(
-        `snapshot schema_version ${version} is newer than supported ${SNAPSHOT_SCHEMA_VERSION}`,
+        `Snapshot schema 版本过新：文件 schema_version 为 ${version}，当前程序最高支持 ${this.schema.version}，拒绝猜测未来格式（请升级 ACO）`,
       );
     }
-    while (version < SNAPSHOT_SCHEMA_VERSION) {
+    while (version < this.schema.version) {
       const step = this.migrations.find((m) => m.fromVersion === version);
       if (!step) {
         throw new SnapshotMigrationError(
-          `no migration registered from schema_version ${version} to ${SNAPSHOT_SCHEMA_VERSION}`,
+          `Snapshot schema 迁移链断裂：缺少从 v${version} 出发的注册迁移，禁止跳版本迁移（TDD §6.5）`,
         );
       }
       if (step.toVersion <= step.fromVersion) {
         throw new SnapshotMigrationError(
-          `migration ${step.fromVersion}->${step.toVersion} does not advance version`,
+          `Snapshot schema 迁移非法：声明的 v${step.fromVersion} → v${step.toVersion} 未递增版本`,
         );
       }
-      current = step.migrate(current);
-      if (current.schema_version !== step.toVersion) {
+      let migrated: RawSnapshot;
+      try {
+        migrated = step.migrate(current);
+      } catch (cause) {
         throw new SnapshotMigrationError(
-          `migration ${step.fromVersion}->${step.toVersion} produced schema_version ${current.schema_version}`,
+          `Snapshot schema 迁移失败：v${step.fromVersion} → v${step.toVersion} 执行出错，任务必须停止，不得带病继续（TDD §6.5）`,
+          { cause },
         );
       }
+      if (migrated.schema_version !== step.toVersion) {
+        throw new SnapshotMigrationError(
+          `Snapshot schema 迁移失败：v${step.fromVersion} → v${step.toVersion} 产出的 schema_version 为 ${migrated.schema_version}，与声明不符`,
+        );
+      }
+      current = migrated;
       version = step.toVersion;
     }
-    return current;
+    return this.schema.validate(current);
   }
 }

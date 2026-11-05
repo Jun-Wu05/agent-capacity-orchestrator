@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "task": {
+    "id": "task_fixture_001",
+    "state": "WAITING_CAPACITY",
+    "created_at": "2026-11-05T10:00:00.000Z",
+    "updated_at": "2026-11-05T10:00:00.000Z",
+    "blocked": null
+  },
+  "agent": {
+    "type": "codex",
+    "adapter_version": "0.1.0"
+  },
+  "project": {
+    "root": "D:\\repo",
+    "worktree": "D:\\wt",
+    "branch": "aco/task/task_fixture_001"
+  },
+  "session": {
+    "id": "uuid-fixture-1",
+    "source": "local-session",
+    "last_verified_at": "2026-11-05T10:00:00.000Z",
+    "resumable": true
+  },
+  "objective": {
+    "summary": "修复解析器回归",
+    "continuation_prompt": "继续上次的工作"
+  },
+  "git": {
+    "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "checkpoint_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_commit": "cccccccccccccccccccccccccccccccccccccccc",
+    "dirty_summary": { "modified": 2 },
+    "untracked_files": ["a.ts", "b.ts"]
+  },
+  "runtime": {
+    "model": "gpt-5.1-codex",
+    "model_override_by_user": null,
+    "reasoning_effort": "high",
+    "sandbox": "workspace-write",
+    "approval_policy": "on-request",
+    "approval_notified_at": "2026-11-05T10:00:01.000Z",
+    "cwd": "D:\\wt"
+  },
+  "capacity": {
+    "available": false,
+    "reset_at": "2026-11-05T12:00:00.000Z",
+    "confidence": "OBSERVED",
+    "observed_at": "2026-11-05T10:00:00.000Z",
+    "source": "rollout-rate-limits"
+  },
+  "execution": {
+    "start_policy": "AUTO",
+    "continuation_count": 1,
+    "transient_retry_count": 0,
+    "permissions_profile": "workspace-safe"
+  },
+  "progress": {
+    "last_checkpoint_type": "CAPTURED",
+    "last_checkpoint_at": "2026-11-05T10:00:00.000Z",
+    "last_test_status": "UNKNOWN",
+    "summary": "已完成解析器骨架"
+  }
+}
