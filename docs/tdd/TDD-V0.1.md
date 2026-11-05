@@ -315,7 +315,11 @@ Snapshot 必须回答：
 └── worktrees\
 ```
 
+`snapshot.previous.json` 只保留 **1 代**：它兜的底是「上次写入中途损坏」这一种故障，1 代已覆盖；更早的恢复路径是 task_events 事件流与 git checkpoint。写入顺序见 #12（临时文件 → fsync → rename → DB transaction）。
+
 ### 6.3 Snapshot Schema v1
+
+Schema 在 MVP 发布前定稿，全部字段并入 `schema_version = 1`，不为中间草案发中间版本（#11 决策）。
 
 ```json
 {
@@ -324,7 +328,8 @@ Snapshot 必须回答：
     "id": "task_xxx",
     "state": "WAITING_CAPACITY",
     "created_at": "...",
-    "updated_at": "..."
+    "updated_at": "...",
+    "blocked": null
   },
   "agent": {
     "type": "codex",
@@ -354,9 +359,11 @@ Snapshot 必须回答：
   },
   "runtime": {
     "model": "...",
+    "model_override_by_user": null,
     "reasoning_effort": "...",
     "sandbox": "...",
     "approval_policy": "...",
+    "approval_notified_at": null,
     "cwd": "..."
   },
   "capacity": {
@@ -368,7 +375,8 @@ Snapshot 必须回答：
   },
   "execution": {
     "start_policy": "AUTO",
-    "retry_count": 0,
+    "continuation_count": 0,
+    "transient_retry_count": 0,
     "permissions_profile": "workspace-safe"
   },
   "progress": {
@@ -379,6 +387,17 @@ Snapshot 必须回答：
   }
 }
 ```
+
+字段定稿说明（#11 grill 决策，2026-11-04）：
+
+- **`task.blocked`**：null 或 `{ "code", "detail", "occurred_at" }`。`code` 复用 §24 错误码枚举（如 `E_CONTINUATION_EXHAUSTED`），支撑程序逻辑（可否重试、通知文案、`aco explain` 归因）；`detail` 是给人看的中文自由文本，不进任何判断逻辑。仅 `state = BLOCKED` 时非空。
+- **`runtime.approval_policy` / `approval_notified_at`**：前者永远保存会话原值（审计与「恢复时尽量保持原设置」护栏）；后者是 resume-later 时中文告知「后台续跑无法弹审批」的时间戳，null = 未告知，时间戳存在性即「已告知」标记。exec resume 通道下 effective approval 恒为 `never`，是通道属性，不落字段，展示时由代码推导。
+- **`runtime.model` / `model_override_by_user`**：`model` 永远保存原模型，ACO 永不自动映射（ADR 0003 §4）。用户明确选定的替代模型写 `model_override_by_user`；恢复时该字段非空则显式传 `-m <override>`，Preflight 检查 override。override 一经用户选定在本任务生命周期内**粘住**，后续恢复不再重新询问；若粘住的 override 也失效，走 `BLOCKED_CONFIGURATION`，ACO 仍不自动换。
+- **`execution.continuation_count` / `transient_retry_count`**：与 DB `tasks` 表同名两列（#10 拆分）互为镜像，同一事务内同步写（写顺序归 #15）。清零语义：
+  - `continuation_count` 任务生命周期内**永不清零**——ADR 0003 §6 的「上限 3」是任务一生总续跑轮数（不含首轮），超限记 `E_CONTINUATION_EXHAUSTED` 进 BLOCKED；
+  - `transient_retry_count` 在任一次 Run 成功推进（本轮未立即出错）后**清零**，退避 1/5/15min 只在一个连续失败 burst 内计数（§14.1）。
+- **等待/退避信息不进 Snapshot**：`WAITING_SESSION` / `WAITING_CAPACITY` 的进入时间、`next_check_at`、重试次数是调度状态，不是「恢复这件工作所需信息」（§6.1），统一由 DB（`tasks.next_check_at`、task_events 状态迁移事件）承载，`aco status` 从 DB 读。此为对票 #11 原措辞的有据修订。
+- **`capacity.confidence` 枚举**：`OBSERVED | USER_REPORT | UNKNOWN`。`OBSERVED` = 从 rollout `rate_limits` 实测；`USER_REPORT` = resume-later 时用户口述额度耗尽（可能没有 `reset_at`）；`UNKNOWN` = 未能观测。新鲜度不进枚举：由 `observed_at` + 可配置新鲜窗口在读时推导，推导过期即视为 STALE。Phase 4 调度门槛：AUTO 仅在 `available` 且 `confidence = OBSERVED` 且未过期时放行；`USER_REPORT` 不自动开跑，等实测确认。
 
 ### 6.4 Snapshot 更新触发点
 
@@ -398,6 +417,13 @@ Snapshot 必须回答：
 - `TASK_COMPLETED`
 - `TASK_BLOCKED`
 - `TASK_FAILED`
+
+配套规则（#11）：
+
+- `TASK_BLOCKED` / `TASK_FAILED` 写 Snapshot 时同步落 `task.blocked = { code, detail, occurred_at }`，离开 BLOCKED（人工恢复重跑）时置回 null；
+- `SESSION_RESUMED` 成功推进时清零 `transient_retry_count`；`continuation_count` 只增不减；
+- 双计数器每次变更与 DB `tasks` 同列在同一事务内同步写（写顺序归 #15）；
+- `CAPACITY_OBSERVED` 与 resume-later 首次捕获都写 `capacity.confidence`（`OBSERVED` / `USER_REPORT` / `UNKNOWN`）。
 
 ### 6.5 Migration
 
@@ -896,6 +922,8 @@ CAPACITY_STALE
 
 最多 3 次。
 
+重试计数在一个连续失败 burst 内累计：任一次 Run 成功推进（本轮未立即再出错）即清零 `transient_retry_count`，下一次瞬时错误重新从 1 min 退避起算。该计数与续跑轮数 `continuation_count`（ADR 0003 §6，任务一生上限 3、不清零）相互独立（#11）。
+
 不可重试：
 
 ```text
@@ -946,9 +974,9 @@ Task Snapshot runtime
 | writable_roots | `turn_context.sandbox_policy.writable_roots` | `-c "sandbox_workspace_write.writable_roots=[...]"`，需重映射到 worktree 路径 |
 | approval | `turn_context.approval_policy` | **不能**，恒为 `never` |
 
-approval 降级处理：`resume-later` 时用中文告知（只告知、不确认），Snapshot 记录原值与"已告知"。
+approval 降级处理：`resume-later` 时用中文告知（只告知、不确认），Snapshot `runtime.approval_policy` 记原值、`approval_notified_at` 记告知时间戳（null = 未告知）；effective 恒为 `never`，是通道属性，不落字段（#11）。
 
-模型预检：`resume-later` 时若模型不在 `codex debug models` 中，交互式请用户明确选择替代模型，Snapshot 记 `model_override_by_user`；Preflight 再检，仍不可用则：
+模型预检：`resume-later` 时若模型不在 `codex debug models` 中，交互式请用户明确选择替代模型，替代模型写 Snapshot `runtime.model_override_by_user`（原 `model` 字段不动）；override 一经选定在本任务生命周期内粘住，后续恢复不再重新询问，恢复时非空则显式传 `-m <override>`。Preflight 再检，仍不可用则：
 
 如果原 runtime 不可恢复：
 
